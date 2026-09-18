@@ -6,7 +6,7 @@ import { sendRegistrationEmail, sendAdminCredentialsEmail, sendStageNotification
 import { pushEmailJob } from './config/redisQueue.js'
 import { sendEmailViaMicroservice } from './config/smtpClient.js'
 import { sign, verify } from 'hono/jwt'
-import { adminAuthMiddleware } from './middleware/auth.js'
+import { adminAuthMiddleware, superAdminAuthMiddleware } from './middleware/auth.js'
 import crypto from 'crypto'
 import dotenv from 'dotenv'
 
@@ -1247,6 +1247,84 @@ app.put('/api/admin/registrations/:id/marks', adminAuthMiddleware(), async (c) =
     return c.json({ success: true, message: 'Candidate marks saved successfully.', candidate: updatedCandidate })
   } catch (err: any) {
     console.error('Save candidate marks error:', err)
+    return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super-Admin ONLY route to edit candidate profile (including Email & RegNo)
+app.put('/api/admin/registrations/:id/profile', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firebase Firestore database is not configured' }, 500)
+    }
+
+    const id = c.req.param('id')
+    const payload = c.get('jwtPayload') as any
+    const adminIdentifier = `${payload?.name || 'Super Admin'} (${payload?.email || 'superadmin'})`
+
+    const body = await c.req.json()
+    const {
+      Name,
+      Email,
+      RegNo,
+      Contact,
+      Gender,
+      Programme,
+      Year,
+      Branch,
+      Domain,
+      Skill,
+      SoftwareUsed,
+      Percentage10,
+      Percentage12,
+      PercentageDiploma,
+      WorkSampleUrl,
+      CaptionTask,
+      WhyJoin
+    } = body
+
+    const docRef = db.collection('registrations').doc(id)
+    const existingDoc = await docRef.get()
+
+    if (!existingDoc.exists) {
+      return c.json({ error: 'Candidate record not found' }, 404)
+    }
+
+    const updateFields: Record<string, any> = {
+      lastUpdatedBy: `${adminIdentifier} (Profile Edit)`,
+      lastUpdatedAt: new Date().toISOString()
+    }
+
+    if (Name !== undefined) updateFields.Name = String(Name).trim()
+    if (Email !== undefined) updateFields.Email = String(Email).trim().toLowerCase()
+    if (RegNo !== undefined) updateFields.RegNo = String(RegNo).trim()
+    if (Contact !== undefined) updateFields.Contact = String(Contact).trim()
+    if (Gender !== undefined) updateFields.Gender = String(Gender).trim()
+    if (Programme !== undefined) updateFields.Programme = String(Programme).trim()
+    if (Year !== undefined) updateFields.Year = String(Year).trim()
+    if (Branch !== undefined) updateFields.Branch = String(Branch).trim()
+    if (Domain !== undefined) updateFields.Domain = String(Domain).trim()
+    if (Skill !== undefined) updateFields.Skill = String(Skill).trim()
+    if (SoftwareUsed !== undefined) updateFields.SoftwareUsed = String(SoftwareUsed).trim()
+    if (Percentage10 !== undefined) updateFields.Percentage10 = Percentage10 !== '' && Percentage10 !== null ? Number(Percentage10) : ''
+    if (Percentage12 !== undefined) updateFields.Percentage12 = Percentage12 !== '' && Percentage12 !== null ? Number(Percentage12) : ''
+    if (PercentageDiploma !== undefined) updateFields.PercentageDiploma = PercentageDiploma !== '' && PercentageDiploma !== null ? Number(PercentageDiploma) : ''
+    if (WorkSampleUrl !== undefined) updateFields.WorkSampleUrl = String(WorkSampleUrl).trim()
+    if (CaptionTask !== undefined) updateFields.CaptionTask = String(CaptionTask).trim()
+    if (WhyJoin !== undefined) updateFields.WhyJoin = String(WhyJoin).trim()
+
+    await docRef.set(updateFields, { merge: true })
+
+    const updatedDocSnap = await docRef.get()
+    const updatedCandidate = { id: docRef.id, ...(updatedDocSnap.data() || {}) }
+
+    return c.json({
+      success: true,
+      message: 'Candidate profile updated successfully by Super Admin.',
+      candidate: updatedCandidate
+    })
+  } catch (err: any) {
+    console.error('Super Admin edit candidate profile error:', err)
     return c.json({ error: `Server error: ${err.message}` }, 500)
   }
 })
