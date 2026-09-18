@@ -1,0 +1,18 @@
+{
+  "registrationEnabled": true,
+  "allowCandidateUpdates": true,
+  "sendEmailAttachments": false,
+  "registrationEndDate": "18/09/2026",
+  "whatsappLink": "https://chat.whatsapp.com/EYnVs0kP906FdQToxrYCsR",
+  "syllabusLink": "",
+  "syllabusFiles": [
+    {
+      "title": "Endeavour Assessment 2026",
+      "url": "/assets/Endeavour Assessment 2026.pdf"
+    }
+  ],
+  "contactDetails": [
+    { "name": "Ashutosh Mehta", "role": "Coordinator", "phone": "+919027042638" },
+    { "name": "Anmol Ranjan", "role": "Coordinator & Treasurer", "phone": "+916201957167" }
+  ]
+}

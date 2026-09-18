@@ -1,0 +1,31 @@
+name = "endeavour-main-api"
+main = "src/worker.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+PORT = "4000"
+CLOUDINARY_CLOUD_NAME = ""
+CLOUDINARY_API_KEY = ""
+CLOUDINARY_API_SECRET = ""
+
+FIREBASE_PROJECT_ID = ""
+FIREBASE_CLIENT_EMAIL = ""
+FIREBASE_PRIVATE_KEY = ""
+
+GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/docsid/exec"
+
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = "587"
+SMTP_USER = "mail@gmail.com"
+SMTP_PASS = ""
+SMTP_FROM = "Endeavour SLIET <mail@gmail.com>"
+SMTP_MICROSERVICE_URL = ""
+MICROSERVICE_SECRET = ""
+
+ADMIN_EMAIL = ""
+ADMIN_PASSWORD = ""
+JWT_SECRET = ""
+
+REDIS_URL = ""
+KV_URL = ""
