@@ -705,7 +705,14 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
     const updatesToApply: any[] = []
 
     for (const item of items) {
-      const cleanReg = String(item.regNo || item.RegNo || item['Reg No'] || '').trim().toLowerCase()
+      const getVal = (possibleKeys: string[]) => {
+        const itemKeys = Object.keys(item)
+        const foundKey = itemKeys.find(k => possibleKeys.includes(k.trim().toLowerCase()))
+        return foundKey !== undefined ? item[foundKey] : undefined
+      }
+
+      const rawReg = getVal(['registration no', 'registration number', 'regno', 'reg no', 'reg_no', 'registration_no']) ?? item.regNo ?? item.RegNo ?? item['Reg No'] ?? item['Registration No']
+      const cleanReg = String(rawReg || '').trim().toLowerCase()
       if (!cleanReg) continue
 
       const match: any = allDocs.find((doc: any) => String(doc.RegNo || '').trim().toLowerCase() === cleanReg)
@@ -715,9 +722,13 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
         (match.marksInterview !== undefined && match.marksInterview !== null && match.marksInterview !== '') ||
         (match.marksClassInterview !== undefined && match.marksClassInterview !== null && match.marksClassInterview !== '')
 
-      const newAptitude = item.aptitudeMarks !== undefined && item.aptitudeMarks !== null && item.aptitudeMarks !== '' ? Number(item.aptitudeMarks) : null
-      const newInterview = item.interviewMarks !== undefined && item.interviewMarks !== null && item.interviewMarks !== '' ? Number(item.interviewMarks) : null
-      const newClass = item.classMarks !== undefined && item.classMarks !== null && item.classMarks !== '' ? Number(item.classMarks) : null
+      const rawApt = getVal(['aptitude marks', 'aptitude', 'stage 1', 'stage1', 'aptitudemarks']) ?? item.aptitudeMarks ?? item.AptitudeMarks ?? item['Aptitude Marks'] ?? item.Aptitude
+      const rawInt = getVal(['interview marks', 'interview', 'stage 2', 'stage2', 'interviewmarks']) ?? item.interviewMarks ?? item.InterviewMarks ?? item['Interview Marks'] ?? item.Interview
+      const rawCls = getVal(['class marks', 'class', 'stage 3', 'stage3', 'classmarks']) ?? item.classMarks ?? item.ClassMarks ?? item['Class Marks'] ?? item.Class
+
+      const newAptitude = rawApt !== undefined && rawApt !== null && rawApt !== '' ? Number(rawApt) : null
+      const newInterview = rawInt !== undefined && rawInt !== null && rawInt !== '' ? Number(rawInt) : null
+      const newClass = rawCls !== undefined && rawCls !== null && rawCls !== '' ? Number(rawCls) : null
 
       if (hasExistingMarks && !forceOverwrite) {
         conflicts.push({
@@ -1303,15 +1314,45 @@ app.put('/api/admin/registrations/:id/profile', superAdminAuthMiddleware(), asyn
     if (Programme !== undefined) updateFields.Programme = String(Programme).trim()
     if (Year !== undefined) updateFields.Year = String(Year).trim()
     if (Branch !== undefined) updateFields.Branch = String(Branch).trim()
-    if (Domain !== undefined) updateFields.Domain = String(Domain).trim()
-    if (Skill !== undefined) updateFields.Skill = String(Skill).trim()
-    if (SoftwareUsed !== undefined) updateFields.SoftwareUsed = String(SoftwareUsed).trim()
-    if (Percentage10 !== undefined) updateFields.Percentage10 = Percentage10 !== '' && Percentage10 !== null ? Number(Percentage10) : ''
-    if (Percentage12 !== undefined) updateFields.Percentage12 = Percentage12 !== '' && Percentage12 !== null ? Number(Percentage12) : ''
-    if (PercentageDiploma !== undefined) updateFields.PercentageDiploma = PercentageDiploma !== '' && PercentageDiploma !== null ? Number(PercentageDiploma) : ''
-    if (WorkSampleUrl !== undefined) updateFields.WorkSampleUrl = String(WorkSampleUrl).trim()
-    if (CaptionTask !== undefined) updateFields.CaptionTask = String(CaptionTask).trim()
-    if (WhyJoin !== undefined) updateFields.WhyJoin = String(WhyJoin).trim()
+    if (Domain !== undefined) {
+      updateFields.Domain = String(Domain).trim()
+      updateFields['Tech/Social_Media'] = String(Domain).trim()
+    }
+    if (Skill !== undefined) {
+      updateFields.Skill = String(Skill).trim()
+      updateFields.Social_Media = String(Skill).trim()
+    }
+    if (SoftwareUsed !== undefined) {
+      updateFields.SoftwareUsed = String(SoftwareUsed).trim()
+      updateFields.Software_Used = String(SoftwareUsed).trim()
+    }
+    if (Percentage10 !== undefined) {
+      const val = Percentage10 !== '' && Percentage10 !== null ? Number(Percentage10) : ''
+      updateFields.Percentage10 = val
+      updateFields.Tenth_Percentage = val
+    }
+    if (Percentage12 !== undefined) {
+      const val = Percentage12 !== '' && Percentage12 !== null ? Number(Percentage12) : ''
+      updateFields.Percentage12 = val
+      updateFields.Twelveth_Percentage = val
+    }
+    if (PercentageDiploma !== undefined) {
+      const val = PercentageDiploma !== '' && PercentageDiploma !== null ? Number(PercentageDiploma) : ''
+      updateFields.PercentageDiploma = val
+      updateFields.Diploma_Percentage = val
+    }
+    if (WorkSampleUrl !== undefined) {
+      updateFields.WorkSampleUrl = String(WorkSampleUrl).trim()
+      updateFields.Social_Media_Sample = String(WorkSampleUrl).trim()
+    }
+    if (CaptionTask !== undefined) {
+      updateFields.CaptionTask = String(CaptionTask).trim()
+      updateFields.Caption_Task = String(CaptionTask).trim()
+    }
+    if (WhyJoin !== undefined) {
+      updateFields.WhyJoin = String(WhyJoin).trim()
+      updateFields.Why = String(WhyJoin).trim()
+    }
 
     await docRef.set(updateFields, { merge: true })
 
