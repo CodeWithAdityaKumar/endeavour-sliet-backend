@@ -55,6 +55,38 @@ function getCleanPasswordForEmail(storedPassword: any, regNo: any): { pwdForEmai
   return { pwdForEmail: pwdStr }
 }
 
+// Audit Logging System Helper Function
+async function logAuditEvent(data: {
+  logType: 'admin' | 'candidate';
+  action: string;
+  actor?: {
+    id?: string;
+    name?: string;
+    email?: string;
+    role?: string;
+    ip?: string;
+  };
+  target?: {
+    id?: string;
+    name?: string;
+    email?: string;
+    regNo?: string;
+  };
+  details?: Record<string, any>;
+}) {
+  try {
+    if (!db) return;
+    const timestamp = new Date().toISOString();
+    await db.collection('audit_logs').add({
+      ...data,
+      timestamp,
+      createdAt: new Date()
+    });
+  } catch (err) {
+    console.error('Failed to log audit event:', err);
+  }
+}
+
 const candidateAuthMiddleware = () => {
   return async (c: any, next: any) => {
     const authHeader = c.req.header('Authorization')
@@ -280,6 +312,19 @@ app.post('/api/register', async (c) => {
       timestamp: new Date().toISOString()
     }).catch(err => console.error('Background registration email dispatch error:', err))
 
+    logAuditEvent({
+      logType: 'candidate',
+      action: 'CANDIDATE_REGISTER',
+      actor: { id: docRefId, name: registrationData.Name, email: registrationData.Email, role: 'candidate' },
+      target: { id: docRefId, name: registrationData.Name, email: registrationData.Email, regNo: registrationData.RegNo },
+      details: {
+        programme: registrationData.Programme,
+        year: registrationData.Year,
+        branch: registrationData.Branch,
+        contact: registrationData.Contact
+      }
+    })
+
     return c.json({
       success: true,
       message: 'Registration successful!',
@@ -499,7 +544,21 @@ app.put('/api/admin/registrations/:id/status', adminAuthMiddleware(), async (c) 
       return c.json({ error: 'Invalid status value' }, 400)
     }
 
-    await db.collection('registrations').doc(id).update({ status })
+    const docRef = db.collection('registrations').doc(id)
+    const docSnap = await docRef.get()
+    const oldData = docSnap.exists ? docSnap.data() : {}
+
+    await docRef.update({ status })
+
+    // Log audit event
+    const adminPayload = (c.get('jwtPayload') as any) || {}
+    logAuditEvent({
+      logType: 'admin',
+      action: `STATUS_${String(status).toUpperCase()}`,
+      actor: { name: adminPayload.name || 'Admin', email: adminPayload.email, role: adminPayload.role || 'admin' },
+      target: { id, name: oldData?.Name || oldData?.fullName, email: oldData?.Email || oldData?.email, regNo: oldData?.RegNo || oldData?.registrationNo },
+      details: { oldStatus: oldData?.status || 'pending', newStatus: status }
+    })
 
     return c.json({ success: true, message: 'Status updated successfully' })
   } catch (err: any) {
@@ -675,6 +734,24 @@ app.post('/api/admin/send-custom-email', adminAuthMiddleware(), async (c) => {
       }
     })()
 
+    // Log audit event for custom email
+    const adminPayload = (c.get('jwtPayload') as any) || {}
+    const firstRecipient = recipients[0] || {}
+    logAuditEvent({
+      logType: 'admin',
+      action: 'SEND_CUSTOM_EMAIL',
+      actor: { name: adminPayload.name || 'Admin', email: adminPayload.email, role: adminPayload.role || 'admin' },
+      target: recipients.length === 1 ? { id: firstRecipient.id, name: firstRecipient.name, email: firstRecipient.email } : { name: `${recipients.length} candidates` },
+      details: {
+        subject,
+        targetType: target,
+        recipientCount: recipients.length,
+        recipientsList: recipients.slice(0, 10).map(r => r.email),
+        messagePreview: messageHtml.replace(/<[^>]+>/g, '').substring(0, 200),
+        rawHtmlContent: messageHtml
+      }
+    })
+
     return c.json({
       success: true,
       message: `Custom email dispatch started in background for ${recipients.length} recipients.`
@@ -726,9 +803,17 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
       const rawInt = getVal(['interview marks', 'interview', 'stage 2', 'stage2', 'interviewmarks']) ?? item.interviewMarks ?? item.InterviewMarks ?? item['Interview Marks'] ?? item.Interview
       const rawCls = getVal(['class marks', 'class', 'stage 3', 'stage3', 'classmarks']) ?? item.classMarks ?? item.ClassMarks ?? item['Class Marks'] ?? item.Class
 
+      const rawRemApt = getVal(['aptitude remarks', 'aptitude remark', 'aptitude note', 'aptitude_remarks', 'aptituderemarks']) ?? item.remarksAptitude ?? item.AptitudeRemarks ?? item['Aptitude Remarks'] ?? item['Aptitude Note']
+      const rawRemInt = getVal(['interview remarks', 'interview remark', 'interview note', 'interview_remarks', 'interviewremarks']) ?? item.remarksInterview ?? item.InterviewRemarks ?? item['Interview Remarks'] ?? item['Interview Note']
+      const rawRemCls = getVal(['class remarks', 'class remark', 'class note', 'class_remarks', 'classremarks']) ?? item.remarksClassInterview ?? item.ClassRemarks ?? item['Class Remarks'] ?? item['Class Note']
+
       const newAptitude = rawApt !== undefined && rawApt !== null && rawApt !== '' ? Number(rawApt) : null
       const newInterview = rawInt !== undefined && rawInt !== null && rawInt !== '' ? Number(rawInt) : null
       const newClass = rawCls !== undefined && rawCls !== null && rawCls !== '' ? Number(rawCls) : null
+
+      const newRemApt = rawRemApt !== undefined && rawRemApt !== null ? String(rawRemApt).trim() : null
+      const newRemInt = rawRemInt !== undefined && rawRemInt !== null ? String(rawRemInt).trim() : null
+      const newRemCls = rawRemCls !== undefined && rawRemCls !== null ? String(rawRemCls).trim() : null
 
       if (hasExistingMarks && !forceOverwrite) {
         conflicts.push({
@@ -754,7 +839,10 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
         hasExistingMarks,
         newAptitude,
         newInterview,
-        newClass
+        newClass,
+        newRemApt,
+        newRemInt,
+        newRemCls
       })
     }
 
@@ -781,6 +869,10 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
       if (update.newInterview !== null) updateData.marksInterview = update.newInterview
       if (update.newClass !== null) updateData.marksClassInterview = update.newClass
 
+      if (update.newRemApt !== null) updateData.remarksAptitude = update.newRemApt
+      if (update.newRemInt !== null) updateData.remarksInterview = update.newRemInt
+      if (update.newRemCls !== null) updateData.remarksClassInterview = update.newRemCls
+
       const historyEntry = {
         timestamp: new Date().toISOString(),
         updatedBy: adminIdentifier,
@@ -788,12 +880,18 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
         previousMarks: {
           marksAptitude: update.existingData.marksAptitude ?? null,
           marksInterview: update.existingData.marksInterview ?? null,
-          marksClassInterview: update.existingData.marksClassInterview ?? null
+          marksClassInterview: update.existingData.marksClassInterview ?? null,
+          remarksAptitude: update.existingData.remarksAptitude ?? '',
+          remarksInterview: update.existingData.remarksInterview ?? '',
+          remarksClassInterview: update.existingData.remarksClassInterview ?? ''
         },
         newMarks: {
           marksAptitude: update.newAptitude ?? update.existingData.marksAptitude ?? null,
           marksInterview: update.newInterview ?? update.existingData.marksInterview ?? null,
-          marksClassInterview: update.newClass ?? update.existingData.marksClassInterview ?? null
+          marksClassInterview: update.newClass ?? update.existingData.marksClassInterview ?? null,
+          remarksAptitude: update.newRemApt ?? update.existingData.remarksAptitude ?? '',
+          remarksInterview: update.newRemInt ?? update.existingData.remarksInterview ?? '',
+          remarksClassInterview: update.newRemCls ?? update.existingData.remarksClassInterview ?? ''
         }
       }
 
@@ -806,9 +904,20 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
       updatedCount++
     }
 
+    logAuditEvent({
+      logType: 'admin',
+      action: 'IMPORT_CANDIDATE_MARKS',
+      actor: { name: payload?.name || 'Admin', email: payload?.email, role: payload?.role || (payload?.isSuperAdmin ? 'superadmin' : 'admin') },
+      details: {
+        totalRowsProcessed: items.length,
+        updatedCandidatesCount: updatedCount,
+        importedHeaders: items[0] ? Object.keys(items[0]) : []
+      }
+    })
+
     return c.json({
       success: true,
-      message: `Successfully imported stage marks for ${updatedCount} candidates!`,
+      message: `Successfully imported stage marks and remarks for ${updatedCount} candidates!`,
       updatedCount
     })
   } catch (err: any) {
@@ -817,7 +926,7 @@ app.post('/api/admin/marks/import', adminAuthMiddleware(), async (c) => {
   }
 })
 
-// Endpoint to batch delete multiple candidate registrations
+// Endpoint to batch delete multiple candidate registrations (moves candidates to Trash backup)
 app.post('/api/admin/registrations/batch-delete', adminAuthMiddleware(), async (c) => {
   try {
     if (!db) {
@@ -830,22 +939,41 @@ app.post('/api/admin/registrations/batch-delete', adminAuthMiddleware(), async (
       return c.json({ error: 'No candidate IDs provided for batch deletion' }, 400)
     }
 
+    const payload = c.get('jwtPayload') as any
+    const adminIdentifier = (payload?.isSuperAdmin || payload?.name === 'Super Admin')
+      ? 'Super Admin'
+      : (payload?.name ? `${payload.name} (${payload.email})` : (payload?.email || 'Admin'))
+
+    const now = new Date().toISOString()
     const batch = db.batch()
+
     for (const id of ids) {
       const docRef = db.collection('registrations').doc(id)
-      batch.delete(docRef)
+      const docSnap = await docRef.get()
+      if (docSnap.exists) {
+        const candidateData = docSnap.data() || {}
+        const deletedRef = db.collection('deleted_registrations').doc(id)
+        batch.set(deletedRef, {
+          ...candidateData,
+          deletedBy: adminIdentifier,
+          deletedAt: now,
+          deletionMethod: 'Batch Delete',
+          originalId: id
+        })
+        batch.delete(docRef)
+      }
     }
 
     await batch.commit()
 
-    return c.json({ success: true, message: `${ids.length} candidates deleted successfully` })
+    return c.json({ success: true, message: `${ids.length} candidates moved to Trash successfully` })
   } catch (err: any) {
     console.error('Batch delete registrations error:', err)
     return c.json({ error: `Server error: ${err.message}` }, 500)
   }
 })
 
-// Protected route to delete a candidate registration
+// Protected route to delete a candidate registration (moves to Trash backup)
 app.delete('/api/admin/registrations/:id', adminAuthMiddleware(), async (c) => {
   try {
     if (!db) {
@@ -853,12 +981,227 @@ app.delete('/api/admin/registrations/:id', adminAuthMiddleware(), async (c) => {
     }
 
     const id = c.req.param('id')
-    await db.collection('registrations').doc(id).delete()
+    const payload = c.get('jwtPayload') as any
+    const adminIdentifier = (payload?.isSuperAdmin || payload?.name === 'Super Admin')
+      ? 'Super Admin'
+      : (payload?.name ? `${payload.name} (${payload.email})` : (payload?.email || 'Admin'))
 
-    return c.json({ success: true, message: 'Registration deleted successfully' })
+    const docRef = db.collection('registrations').doc(id)
+    const docSnap = await docRef.get()
+
+    if (docSnap.exists) {
+      const candidateData = docSnap.data() || {}
+      await db.collection('deleted_registrations').doc(id).set({
+        ...candidateData,
+        deletedBy: adminIdentifier,
+        deletedAt: new Date().toISOString(),
+        deletionMethod: 'Manual Delete',
+        originalId: id
+      })
+      await docRef.delete()
+
+      logAuditEvent({
+        logType: 'admin',
+        action: 'TRASH_CANDIDATE',
+        actor: { name: payload?.name || 'Admin', email: payload?.email, role: payload?.role || (payload?.isSuperAdmin ? 'superadmin' : 'admin') },
+        target: { id, name: candidateData?.Name || candidateData?.fullName, email: candidateData?.Email || candidateData?.email, regNo: candidateData?.RegNo || candidateData?.registrationNo },
+        details: { deletionMethod: 'Manual Delete', deletedBy: adminIdentifier }
+      })
+    }
+
+    return c.json({ success: true, message: 'Registration moved to Trash successfully' })
   } catch (err: any) {
     console.error('Delete registration error:', err)
     return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super Admin ONLY: Fetch all trashed candidate registrations
+app.get('/api/admin/deleted-registrations', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firebase Firestore database is not configured' }, 500)
+    }
+
+    const snapshot = await db.collection('deleted_registrations').get()
+    const registrations = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    })).sort((a: any, b: any) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime())
+
+    return c.json({ success: true, registrations })
+  } catch (err: any) {
+    console.error('Fetch deleted registrations error:', err)
+    return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super Admin ONLY: Restore trashed candidate back to registrations collection
+app.post('/api/admin/deleted-registrations/:id/restore', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firebase Firestore database is not configured' }, 500)
+    }
+
+    const id = c.req.param('id')
+    const docRef = db.collection('deleted_registrations').doc(id)
+    const docSnap = await docRef.get()
+
+    if (!docSnap.exists) {
+      return c.json({ error: 'Trashed candidate record not found' }, 404)
+    }
+
+    const data = docSnap.data() || {}
+    const { deletedBy, deletedAt, deletionMethod, originalId, ...candidateData } = data
+
+    await db.collection('registrations').doc(id).set({
+      ...candidateData,
+      restoredAt: new Date().toISOString()
+    }, { merge: true })
+
+    await docRef.delete()
+
+    const payload = c.get('jwtPayload') as any
+    logAuditEvent({
+      logType: 'admin',
+      action: 'RESTORE_CANDIDATE',
+      actor: { name: payload?.name || 'Super Admin', email: payload?.email, role: 'superadmin' },
+      target: { id, name: candidateData?.Name || candidateData?.fullName, email: candidateData?.Email || candidateData?.email, regNo: candidateData?.RegNo || candidateData?.registrationNo },
+      details: { message: 'Restored candidate from trash to active candidates list' }
+    })
+
+    return c.json({ success: true, message: 'Candidate restored successfully!' })
+  } catch (err: any) {
+    console.error('Restore candidate error:', err)
+    return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super Admin ONLY: Batch restore trashed candidates
+app.post('/api/admin/deleted-registrations/batch-restore', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firebase Firestore database is not configured' }, 500)
+    }
+
+    const { ids } = await c.req.json()
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return c.json({ error: 'No candidate IDs provided for batch restore' }, 400)
+    }
+
+    const batch = db.batch()
+    for (const id of ids) {
+      const docRef = db.collection('deleted_registrations').doc(id)
+      const docSnap = await docRef.get()
+      if (docSnap.exists) {
+        const data = docSnap.data() || {}
+        const { deletedBy, deletedAt, deletionMethod, originalId, ...candidateData } = data
+        const regRef = db.collection('registrations').doc(id)
+        batch.set(regRef, {
+          ...candidateData,
+          restoredAt: new Date().toISOString()
+        }, { merge: true })
+        batch.delete(docRef)
+      }
+    }
+
+    await batch.commit()
+
+    const payload = c.get('jwtPayload') as any
+    logAuditEvent({
+      logType: 'admin',
+      action: 'BATCH_RESTORE_CANDIDATES',
+      actor: { name: payload?.name || 'Super Admin', email: payload?.email, role: 'superadmin' },
+      details: { count: ids.length, candidateIds: ids }
+    })
+
+    return c.json({ success: true, message: `${ids.length} candidates restored successfully!` })
+  } catch (err: any) {
+    console.error('Batch restore error:', err)
+    return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super Admin ONLY: Permanently delete trashed candidate from database
+app.delete('/api/admin/deleted-registrations/:id/permanent', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firebase Firestore database is not configured' }, 500)
+    }
+
+    const id = c.req.param('id')
+    const docSnap = await db.collection('deleted_registrations').doc(id).get()
+    const targetData = docSnap.exists ? docSnap.data() : {}
+
+    await db.collection('deleted_registrations').doc(id).delete()
+
+    const payload = c.get('jwtPayload') as any
+    logAuditEvent({
+      logType: 'admin',
+      action: 'PERMANENT_DELETE_CANDIDATE',
+      actor: { name: payload?.name || 'Super Admin', email: payload?.email, role: 'superadmin' },
+      target: { id, name: targetData?.Name || targetData?.fullName, email: targetData?.Email || targetData?.email, regNo: targetData?.RegNo || targetData?.registrationNo },
+      details: { message: 'Candidate permanently deleted from database.' }
+    })
+
+    return c.json({ success: true, message: 'Candidate permanently deleted from database.' })
+  } catch (err: any) {
+    console.error('Permanent delete error:', err)
+    return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super Admin ONLY: Batch permanent delete trashed candidates
+app.post('/api/admin/deleted-registrations/batch-permanent-delete', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firebase Firestore database is not configured' }, 500)
+    }
+
+    const { ids } = await c.req.json()
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return c.json({ error: 'No candidate IDs provided for permanent deletion' }, 400)
+    }
+
+    const batch = db.batch()
+    for (const id of ids) {
+      const docRef = db.collection('deleted_registrations').doc(id)
+      batch.delete(docRef)
+    }
+
+    await batch.commit()
+
+    return c.json({ success: true, message: `${ids.length} candidates permanently deleted from database.` })
+  } catch (err: any) {
+    console.error('Batch permanent delete error:', err)
+    return c.json({ error: `Server error: ${err.message}` }, 500)
+  }
+})
+
+// Super Admin ONLY: Fetch Audit Logs (admin or candidate)
+app.get('/api/admin/audit-logs', superAdminAuthMiddleware(), async (c) => {
+  try {
+    if (!db) {
+      return c.json({ error: 'Firestore database is not configured' }, 500)
+    }
+
+    const type = c.req.query('type') || 'admin'
+    const snapshot = await db.collection('audit_logs')
+      .where('logType', '==', type)
+      .get()
+
+    const logs: any[] = []
+    snapshot.forEach((doc: any) => {
+      logs.push({ id: doc.id, ...doc.data() })
+    })
+
+    // Sort descending by timestamp / createdAt
+    logs.sort((a, b) => new Date(b.timestamp || b.createdAt || 0).getTime() - new Date(a.timestamp || a.createdAt || 0).getTime())
+
+    return c.json({ success: true, logs })
+  } catch (err: any) {
+    console.error('Audit logs fetch error:', err)
+    return c.json({ error: err.message || 'Failed to fetch audit logs' }, 500)
   }
 })
 
@@ -1215,7 +1558,10 @@ app.put('/api/admin/registrations/:id/marks', adminAuthMiddleware(), async (c) =
       ? 'Super Admin'
       : (payload?.name ? `${payload.name} (${payload.email})` : (payload?.email || 'Sub Admin'))
 
-    const { marksAptitude, marksInterview, marksClassInterview } = await c.req.json()
+    const {
+      marksAptitude, marksInterview, marksClassInterview,
+      remarksAptitude, remarksInterview, remarksClassInterview
+    } = await c.req.json()
 
     const docRef = db.collection('registrations').doc(id)
     const existingDoc = await docRef.get()
@@ -1225,6 +1571,10 @@ app.put('/api/admin/registrations/:id/marks', adminAuthMiddleware(), async (c) =
     const newInt = marksInterview !== undefined && marksInterview !== '' && marksInterview !== null ? Number(marksInterview) : null
     const newCls = marksClassInterview !== undefined && marksClassInterview !== '' && marksClassInterview !== null ? Number(marksClassInterview) : null
 
+    const newRemApt = remarksAptitude !== undefined && remarksAptitude !== null ? String(remarksAptitude).trim() : (existingData.remarksAptitude || '')
+    const newRemInt = remarksInterview !== undefined && remarksInterview !== null ? String(remarksInterview).trim() : (existingData.remarksInterview || '')
+    const newRemCls = remarksClassInterview !== undefined && remarksClassInterview !== null ? String(remarksClassInterview).trim() : (existingData.remarksClassInterview || '')
+
     const historyEntry = {
       timestamp: new Date().toISOString(),
       updatedBy: adminIdentifier,
@@ -1232,12 +1582,18 @@ app.put('/api/admin/registrations/:id/marks', adminAuthMiddleware(), async (c) =
       previousMarks: {
         marksAptitude: existingData.marksAptitude ?? null,
         marksInterview: existingData.marksInterview ?? null,
-        marksClassInterview: existingData.marksClassInterview ?? null
+        marksClassInterview: existingData.marksClassInterview ?? null,
+        remarksAptitude: existingData.remarksAptitude ?? '',
+        remarksInterview: existingData.remarksInterview ?? '',
+        remarksClassInterview: existingData.remarksClassInterview ?? ''
       },
       newMarks: {
         marksAptitude: newApt,
         marksInterview: newInt,
-        marksClassInterview: newCls
+        marksClassInterview: newCls,
+        remarksAptitude: newRemApt,
+        remarksInterview: newRemInt,
+        remarksClassInterview: newRemCls
       }
     }
 
@@ -1247,15 +1603,30 @@ app.put('/api/admin/registrations/:id/marks', adminAuthMiddleware(), async (c) =
       marksAptitude: newApt,
       marksInterview: newInt,
       marksClassInterview: newCls,
+      remarksAptitude: newRemApt,
+      remarksInterview: newRemInt,
+      remarksClassInterview: newRemCls,
       marksHistory: [historyEntry, ...existingHistory],
       lastUpdatedBy: `${adminIdentifier} (Manual Edit)`,
       lastUpdatedAt: new Date().toISOString()
     }, { merge: true })
 
+    logAuditEvent({
+      logType: 'admin',
+      action: 'UPDATE_CANDIDATE_MARKS',
+      actor: { name: payload?.name || 'Admin', email: payload?.email, role: payload?.role || (payload?.isSuperAdmin ? 'superadmin' : 'admin') },
+      target: { id, name: existingData.Name || existingData.fullName, email: existingData.Email || existingData.email, regNo: existingData.RegNo || existingData.registrationNo },
+      details: {
+        previousMarks: { aptitude: existingData.marksAptitude, interview: existingData.marksInterview, class: existingData.marksClassInterview },
+        newMarks: { aptitude: newApt, interview: newInt, class: newCls },
+        remarks: { aptitude: newRemApt, interview: newRemInt, class: newRemCls }
+      }
+    })
+
     const updatedDocSnap = await docRef.get()
     const updatedCandidate = { id: docRef.id, ...(updatedDocSnap.data() || {}) }
 
-    return c.json({ success: true, message: 'Candidate marks saved successfully.', candidate: updatedCandidate })
+    return c.json({ success: true, message: 'Candidate marks and remarks saved successfully.', candidate: updatedCandidate })
   } catch (err: any) {
     console.error('Save candidate marks error:', err)
     return c.json({ error: `Server error: ${err.message}` }, 500)
@@ -1413,6 +1784,23 @@ app.post('/api/admin/notifications/bulk', adminAuthMiddleware(), async (c) => {
     }
     await triggerEmails()
 
+    // Log audit event for Stage Invitation
+    const adminPayload = (c.get('jwtPayload') as any) || {}
+    logAuditEvent({
+      logType: 'admin',
+      action: 'SEND_STAGE_INVITE',
+      actor: { name: adminPayload.name || 'Admin', email: adminPayload.email, role: adminPayload.role || 'admin' },
+      target: { name: `Stage ${stage} Candidates (${candidates.length})` },
+      details: {
+        stage: `Stage ${stage}`,
+        dateTime,
+        venue,
+        instructions: instructions || 'N/A',
+        recipientCount: candidates.length,
+        recipientsList: candidates.slice(0, 10).map(cand => cand.email)
+      }
+    })
+
     return c.json({
       success: true,
       message: `Asynchronously sending Stage ${stage} invitation emails to ${candidates.length} candidates.`,
@@ -1475,6 +1863,14 @@ app.post('/api/candidate/login', async (c) => {
       role: 'candidate',
       exp: Math.floor(Date.now() / 1000) + 86400 * 7 // 7 days token
     }, jwtSecret)
+
+    logAuditEvent({
+      logType: 'candidate',
+      action: 'CANDIDATE_LOGIN',
+      actor: { id: candidateDoc.id, name: data.Name, email: data.Email, role: 'candidate' },
+      target: { id: candidateDoc.id, name: data.Name, email: data.Email, regNo: data.RegNo },
+      details: { message: 'Candidate logged into candidate portal' }
+    })
 
     return c.json({
       success: true,
@@ -1561,9 +1957,26 @@ app.put('/api/candidate/profile', candidateAuthMiddleware(), async (c) => {
     const existingData = existingDoc.exists ? existingDoc.data() : {}
 
     const updates: any = {}
+    const changedFields: Record<string, { oldValue: any; newValue: any }> = {}
+    const changedFieldNames: string[] = []
+
     allowedFields.forEach((field) => {
       if (body[field] !== undefined) {
-        updates[field] = body[field]
+        const oldVal = existingData ? existingData[field] : undefined
+        const newVal = body[field]
+
+        const strOld = String(oldVal ?? '').trim()
+        const strNew = String(newVal ?? '').trim()
+
+        if (strOld !== strNew) {
+          changedFields[field] = {
+            oldValue: oldVal !== undefined && oldVal !== '' && oldVal !== null ? oldVal : 'Empty',
+            newValue: newVal !== undefined && newVal !== '' && newVal !== null ? newVal : 'Empty'
+          }
+          changedFieldNames.push(field)
+        }
+
+        updates[field] = newVal
       }
     })
 
@@ -1612,6 +2025,19 @@ app.put('/api/candidate/profile', candidateAuthMiddleware(), async (c) => {
       }
     }
 
+    // Log audit event for Candidate Profile Update
+    logAuditEvent({
+      logType: 'candidate',
+      action: 'CANDIDATE_UPDATE_PROFILE',
+      actor: { id: payload.id, name: existingData?.Name || payload.name, email: existingData?.Email || payload.email, role: 'candidate' },
+      target: { id: payload.id, name: existingData?.Name || payload.name, email: existingData?.Email || payload.email, regNo: existingData?.RegNo || payload.regNo },
+      details: {
+        totalFieldsModified: changedFieldNames.length,
+        modifiedFields: changedFieldNames.length > 0 ? changedFieldNames : ['No structural changes'],
+        fieldChanges: changedFields
+      }
+    })
+
     return c.json({ success: true, message: 'Profile updated successfully!' })
   } catch (err: any) {
     console.error('Update candidate profile error:', err)
@@ -1652,6 +2078,14 @@ app.put('/api/candidate/change-password', candidateAuthMiddleware(), async (c) =
     }
 
     await docRef.set({ Password: hashPassword(newPassword), passwordUpdatedAt: new Date().toISOString() }, { merge: true })
+
+    logAuditEvent({
+      logType: 'candidate',
+      action: 'CANDIDATE_CHANGE_PASSWORD',
+      actor: { id: payload.id, name: candidateData?.Name || payload.name, email: candidateData?.Email || payload.email, role: 'candidate' },
+      target: { id: payload.id, name: candidateData?.Name || payload.name, email: candidateData?.Email || payload.email, regNo: candidateData?.RegNo || payload.regNo },
+      details: { message: 'Candidate changed account password' }
+    })
 
     return c.json({ success: true, message: 'Password changed successfully!' })
   } catch (err: any) {
